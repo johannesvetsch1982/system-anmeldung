@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Anmeldung Persönliches System</title>
+<style>
+  :root { --blau:#2f5f8f; --blau-hell:#e8eff6; --text:#1a1a1a; --grau:#6b6b6b; --rot:#b3261e; --rand:#d9dee3; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f7f8fa; color:var(--text); font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; font-size:16px; line-height:1.45; }
+  main { max-width:420px; margin:12vh auto 0; padding:0 16px; }
+  .karte { background:#fff; border:1px solid var(--rand); border-radius:10px; padding:28px 24px; }
+  h1 { font-size:20px; font-weight:bold; margin:0 0 6px; }
+  p { margin:8px 0; }
+  .klein { font-size:14px; color:var(--grau); }
+  .fehler { color:var(--rot); }
+  button { width:100%; margin-top:14px; padding:12px; font:inherit; font-weight:bold; border-radius:8px; cursor:pointer; border:1px solid var(--blau); }
+  .primaer { background:var(--blau); color:#fff; }
+  .sekundaer { background:#fff; color:var(--blau); }
+  ul { padding-left:18px; margin:8px 0; }
+  .box { background:var(--blau-hell); border-radius:8px; padding:10px 12px; margin-top:12px; }
+</style>
+</head>
+<body>
+<main><div class="karte" id="inhalt"><h1>Persönliches System</h1><p class="klein">Wird geladen …</p></div></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://sohkfosapfrcdnakwwww.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_16AXzEqicplIzUxDMBEILQ_zrvy3PmL'; // öffentlicher Schlüssel, für Browser bestimmt
+const ERLAUBT = 'johannes.vetsch@gmail.com';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } });
+const el = document.getElementById('inhalt');
+
+function zeige(html) { el.innerHTML = '<h1>Persönliches System</h1>' + html; }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Die Anfrage-Kennung überlebt den Umweg über Google
+const q = new URLSearchParams(location.search);
+let authId = q.get('authorization_id');
+try {
+  if (authId) sessionStorage.setItem('authorization_id', authId);
+  else authId = sessionStorage.getItem('authorization_id');
+} catch (e) {}
+
+async function start() {
+  if (!authId) {
+    zeige('<p>Diese Seite wird nur während einer Verbindung aus Claude oder ChatGPT gebraucht.</p><p class="klein">Keine offene Anfrage gefunden.</p>');
+    return;
+  }
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) {
+    zeige('<p>Ein Chat möchte sich mit deinem System verbinden. Bitte melde dich an.</p><button class="primaer" id="google">Mit Google anmelden</button>');
+    document.getElementById('google').onclick = () => {
+      const zurueck = location.origin + location.pathname + '?authorization_id=' + encodeURIComponent(authId);
+      sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: zurueck, queryParams: { prompt: 'select_account', login_hint: ERLAUBT } } });
+    };
+    return;
+  }
+  const email = (session.user.email || '').toLowerCase();
+  if (email !== ERLAUBT) {
+    await sb.auth.signOut();
+    zeige('<p class="fehler">Dieses Google-Konto hat keinen Zugang.</p>');
+    return;
+  }
+  const { data, error } = await sb.auth.oauth.getAuthorizationDetails(authId);
+  if (error) { zeige('<p class="fehler">Die Anfrage ist abgelaufen oder ungültig.</p><p class="klein">' + esc(error.message) + '</p>'); return; }
+  const weiter = data.redirect_url || data.redirect_to;
+  if (weiter && !data.client) { aufraeumen(); location.href = weiter; return; }
+  const name = (data.client && (data.client.name || data.client.client_name)) || 'Unbekannter Chat';
+  const bereiche = String(data.scope || data.scopes || '').split(/[\s,]+/).filter(Boolean);
+  zeige('<p><strong>' + esc(name) + '</strong> möchte auf dein Persönliches System zugreifen.</p>'
+    + '<div class="box klein">Angemeldet als ' + esc(email) + (bereiche.length ? '<br>Berechtigungen: ' + bereiche.map(esc).join(', ') : '') + '</div>'
+    + '<p class="klein">Der Chat sieht nur, was die Kartei über ihre Tür freigibt. Du kannst die Verbindung jederzeit trennen.</p>'
+    + '<button class="primaer" id="ja">Zulassen</button><button class="sekundaer" id="nein">Ablehnen</button>');
+  document.getElementById('ja').onclick = () => entscheiden(true);
+  document.getElementById('nein').onclick = () => entscheiden(false);
+}
+
+async function entscheiden(ja) {
+  zeige('<p class="klein">Einen Moment …</p>');
+  const r = ja ? await sb.auth.oauth.approveAuthorization(authId) : await sb.auth.oauth.denyAuthorization(authId);
+  if (r.error) { zeige('<p class="fehler">Das hat nicht geklappt.</p><p class="klein">' + esc(r.error.message) + '</p>'); return; }
+  aufraeumen();
+  const ziel = r.data && (r.data.redirect_url || r.data.redirect_to);
+  if (ziel) location.href = ziel; else zeige('<p>Erledigt. Du kannst dieses Fenster schliessen.</p>');
+}
+
+function aufraeumen() { try { sessionStorage.removeItem('authorization_id'); } catch (e) {} }
+
+start().catch(e => zeige('<p class="fehler">Unerwarteter Fehler.</p><p class="klein">' + esc(e.message) + '</p>'));
+</script>
+</body>
+</html>
